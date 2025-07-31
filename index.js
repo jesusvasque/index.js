@@ -2,7 +2,7 @@ import express from "express";
 import { createServer } from "http";
 import { WebSocketServer } from "ws";
 import mysql from "mysql2/promise";
-import { drizzle } from "drizzle-orm/mysql2";
+import { drizzle, sql } from "drizzle-orm/mysql2";
 import { mysqlTable, varchar, text, int, datetime, boolean } from "drizzle-orm/mysql-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -11,11 +11,11 @@ import { z } from "zod";
 // CONFIGURACIÓN MYSQL INFINITYFREE
 // =======================
 // Sustituye estos valores con los que te da InfinityFree en el panel
-const DB_HOST = "sql105.infinityfree.com"; // ejemplo: sql103.epizy.com
+const DB_HOST = "sql105.infinityfree.com";
 const DB_USER = "if0_39567764";
 const DB_PASS = "kquuBq7mlrCYaGL";
 const DB_NAME = "if0_39567764_queue_app";
-const DB_PORT = 3306; // por lo general es 3306 en InfinityFree
+const DB_PORT = 3306;
 
 const pool = await mysql.createPool({
   host: DB_HOST,
@@ -27,6 +27,9 @@ const pool = await mysql.createPool({
   connectionLimit: 5,
 });
 
+// =======================
+// DEFINICIÓN DE TABLA
+// =======================
 const queueEntries = mysqlTable("queue_entries", {
   id: varchar("id", { length: 36 }).primaryKey(),
   name: text("name").notNull(),
@@ -35,14 +38,20 @@ const queueEntries = mysqlTable("queue_entries", {
   isActive: boolean("is_active").default(false),
   isCompleted: boolean("is_completed").default(false),
   position: int("position").notNull(),
-  createdAt: datetime("created_at").default(new Date()),
+  createdAt: datetime("created_at").default(sql`CURRENT_TIMESTAMP`),
   startedAt: datetime("started_at"),
   expiresAt: datetime("expires_at")
 });
 
-const db = drizzle(pool, { schema: { queueEntries } });
+// Inicializar Drizzle con modo "default"
+const db = drizzle(pool, {
+  schema: { queueEntries },
+  mode: "default"
+});
 
-// Esquema validación
+// =======================
+// ESQUEMA VALIDACIÓN
+// =======================
 const insertQueueEntrySchema = createInsertSchema(queueEntries).pick({
   name: true,
   referralCode: true
@@ -55,7 +64,9 @@ const insertQueueEntrySchema = createInsertSchema(queueEntries).pick({
   }, "Debe ser un código alfanumérico de 5-10 caracteres o un link de Temu válido")
 });
 
-// Clase para manejo de cola
+// =======================
+// CLASE PARA MANEJO DE COLA
+// =======================
 class DatabaseStorage {
   async addToQueue(entry) {
     const position = await this.getNextPosition();
@@ -105,6 +116,7 @@ const storage = new DatabaseStorage();
 const app = express();
 app.use(express.json());
 
+// Endpoint para unirse a la cola
 app.post("/api/queue/add", async (req, res) => {
   try {
     const clientIP = req.ip;
@@ -116,6 +128,7 @@ app.post("/api/queue/add", async (req, res) => {
   }
 });
 
+// Endpoint para obtener el estado de la cola
 app.get("/api/queue/status", async (req, res) => {
   try {
     const status = await storage.getQueueStatus();
@@ -125,6 +138,7 @@ app.get("/api/queue/status", async (req, res) => {
   }
 });
 
+// Servidor HTTP y WebSocket
 const server = createServer(app);
 const wss = new WebSocketServer({ server, path: "/ws" });
 
