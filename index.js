@@ -1,4 +1,5 @@
 import express from "express";
+import cors from "cors";
 import { createServer } from "http";
 import { WebSocketServer } from "ws";
 import mysql from "mysql2/promise";
@@ -11,7 +12,6 @@ import { z } from "zod";
 // =======================
 // CONFIGURACIÓN MYSQL INFINITYFREE
 // =======================
-// Sustituye estos valores con los que te da InfinityFree en el panel
 const DB_HOST = "sql105.infinityfree.com";
 const DB_USER = "if0_39567764";
 const DB_PASS = "kquuBq7mlrCYaGL";
@@ -44,7 +44,6 @@ const queueEntries = mysqlTable("queue_entries", {
   expiresAt: datetime("expires_at")
 });
 
-// Inicializar Drizzle con modo "default"
 const db = drizzle(pool, {
   schema: { queueEntries },
   mode: "default"
@@ -115,6 +114,9 @@ const storage = new DatabaseStorage();
 // SERVIDOR EXPRESS + WS
 // =======================
 const app = express();
+
+app.set('trust proxy', true); // Para obtener IP real detrás de proxies
+app.use(cors({ origin: "*" })); // Permitir CORS para todos los orígenes, cambia si quieres más seguro
 app.use(express.json());
 
 // Endpoint para unirse a la cola
@@ -139,10 +141,10 @@ app.get("/api/queue/status", async (req, res) => {
   }
 });
 
-// Servidor HTTP y WebSocket
 const server = createServer(app);
 const wss = new WebSocketServer({ server, path: "/ws" });
 
-server.listen(3000, () => {
-  console.log("Servidor conectado a MySQL InfinityFree en puerto 3000");
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+  console.log(`Servidor corriendo en puerto ${PORT}`);
 });
