@@ -8,17 +8,15 @@ import { sql } from "drizzle-orm";
 import { mysqlTable, varchar, text, int, datetime, boolean } from "drizzle-orm/mysql-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
+import { v4 as uuidv4 } from "uuid";
 
-// =======================
-// CONFIGURACIÓN MYSQL INFINITYFREE
-// =======================
 const DB_HOST = "sql105.infinityfree.com";
 const DB_USER = "if0_39567764";
 const DB_PASS = "kquuBq7mlrCYaGL";
 const DB_NAME = "if0_39567764_queue_app";
 const DB_PORT = 3306;
 
-const pool = await mysql.createPool({
+const pool = mysql.createPool({
   host: DB_HOST,
   user: DB_USER,
   password: DB_PASS,
@@ -28,9 +26,6 @@ const pool = await mysql.createPool({
   connectionLimit: 5,
 });
 
-// =======================
-// DEFINICIÓN DE TABLA
-// =======================
 const queueEntries = mysqlTable("queue_entries", {
   id: varchar("id", { length: 36 }).primaryKey(),
   name: text("name").notNull(),
@@ -40,18 +35,12 @@ const queueEntries = mysqlTable("queue_entries", {
   isCompleted: boolean("is_completed").default(false),
   position: int("position").notNull(),
   createdAt: datetime("created_at").default(sql`CURRENT_TIMESTAMP`),
-  startedAt: datetime("started_at"),
-  expiresAt: datetime("expires_at")
+  startedAt: datetime("started_at").nullable(),
+  expiresAt: datetime("expires_at").nullable(),
 });
 
-const db = drizzle(pool, {
-  schema: { queueEntries },
-  mode: "default"
-});
+const db = drizzle(pool);
 
-// =======================
-// ESQUEMA VALIDACIÓN
-// =======================
 const insertQueueEntrySchema = createInsertSchema(queueEntries).pick({
   name: true,
   referralCode: true
@@ -64,13 +53,12 @@ const insertQueueEntrySchema = createInsertSchema(queueEntries).pick({
   }, "Debe ser un código alfanumérico de 5-10 caracteres o un link de Temu válido")
 });
 
-// =======================
-// CLASE PARA MANEJO DE COLA
-// =======================
 class DatabaseStorage {
   async addToQueue(entry) {
     const position = await this.getNextPosition();
+    const id = uuidv4();
     await db.insert(queueEntries).values({
+      id,
       ...entry,
       position,
       isActive: false,
@@ -78,8 +66,9 @@ class DatabaseStorage {
     });
     const activeEntry = await this.getActiveEntry();
     if (!activeEntry) {
-      await this.activateEntry(entry.id);
+      await this.activateEntry(id);
     }
+    return id;
   }
 
   async getActiveEntry() {
@@ -89,14 +78,13 @@ class DatabaseStorage {
   }
 
   async getQueueStatus() {
-    const [total] = await db.execute("SELECT COUNT(*) AS total FROM queue_entries WHERE is_completed = false");
-    const totalInQueue = total[0].total;
-    return { totalInQueue };
+    const [rows] = await pool.query("SELECT COUNT(*) AS total FROM queue_entries WHERE is_completed = false");
+    return { totalInQueue: rows[0].total };
   }
 
   async getNextPosition() {
-    const [result] = await db.execute("SELECT IFNULL(MAX(position), 0) AS maxPosition FROM queue_entries");
-    return (result[0].maxPosition || 0) + 1;
+    const [rows] = await pool.query("SELECT IFNULL(MAX(position), 0) AS maxPosition FROM queue_entries");
+    return (rows[0].maxPosition || 0) + 1;
   }
 
   async activateEntry(id) {
@@ -106,32 +94,49 @@ class DatabaseStorage {
       .set({ isActive: true, startedAt: now, expiresAt })
       .where(queueEntries.id.eq(id));
   }
+
+  async completeActiveEntry() {
+    const activeEntry = await this.getActiveEntry();
+    if (!activeEntry) return null;
+
+    await db.update(queueEntries)
+      .set({ isActive: false, isCompleted: true })
+      .where(queueEntries.id.eq(activeEntry.id));
+
+    // Activar siguiente en orden
+    const [nextEntry] = await db.select().from(queueEntries)
+      .where(queueEntries.isCompleted.eq(false).and(queueEntries.position.gt(activeEntry.position)))
+      .orderBy(queueEntries.position)
+      .limit(1);
+
+    if (nextEntry) {
+      await this.activateEntry(nextEntry.id);
+      return nextEntry;
+    }
+
+    return null;
+  }
 }
 
 const storage = new DatabaseStorage();
 
-// =======================
-// SERVIDOR EXPRESS + WS
-// =======================
 const app = express();
-
-app.set('trust proxy', true); // Para obtener IP real detrás de proxies
-app.use(cors({ origin: "*" })); // Permitir CORS para todos los orígenes, cambia si quieres más seguro
+app.set("trust proxy", true);
+app.use(cors({ origin: "*" }));
 app.use(express.json());
 
-// Endpoint para unirse a la cola
 app.post("/api/queue/add", async (req, res) => {
   try {
     const clientIP = req.ip;
     const validatedData = insertQueueEntrySchema.parse(req.body);
-    await storage.addToQueue({ ...validatedData, ipAddress: clientIP });
-    res.json({ message: "Te has unido a la cola exitosamente" });
+    const id = await storage.addToQueue({ ...validatedData, ipAddress: clientIP });
+    res.json({ message: "Te has unido a la cola exitosamente", id });
+    broadcastQueueUpdate();
   } catch (error) {
-    res.status(500).json({ message: "Error en el servidor", error: error.message });
+    res.status(400).json({ message: "Error en el servidor", error: error.message });
   }
 });
 
-// Endpoint para obtener el estado de la cola
 app.get("/api/queue/status", async (req, res) => {
   try {
     const status = await storage.getQueueStatus();
@@ -141,8 +146,49 @@ app.get("/api/queue/status", async (req, res) => {
   }
 });
 
+// Endpoint para rotar turno
+app.post("/api/queue/rotate", async (req, res) => {
+  try {
+    const nextEntry = await storage.completeActiveEntry();
+    if (nextEntry) {
+      res.json({ message: "Turno rotado", next: nextEntry });
+    } else {
+      res.json({ message: "No hay más turnos" });
+    }
+    broadcastQueueUpdate();
+  } catch (error) {
+    res.status(500).json({ message: "Error en el servidor" });
+  }
+});
+
 const server = createServer(app);
 const wss = new WebSocketServer({ server, path: "/ws" });
+
+function broadcastQueueUpdate() {
+  storage.getActiveEntry().then(active => {
+    const data = JSON.stringify({ active });
+    wss.clients.forEach(client => {
+      if (client.readyState === 1) {
+        client.send(data);
+      }
+    });
+  });
+}
+
+wss.on("connection", (ws) => {
+  console.log("Cliente WS conectado");
+  storage.getActiveEntry().then(active => {
+    ws.send(JSON.stringify({ active }));
+  });
+
+  ws.on("message", (message) => {
+    console.log("Mensaje recibido por WS:", message);
+  });
+
+  ws.on("close", () => {
+    console.log("Cliente WS desconectado");
+  });
+});
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
