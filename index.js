@@ -35,8 +35,8 @@ const queueEntries = mysqlTable("queue_entries", {
   isCompleted: boolean("is_completed").default(false),
   position: int("position").notNull(),
   createdAt: datetime("created_at").default(sql`CURRENT_TIMESTAMP`),
-  startedAt: datetime("started_at").nullable(),
-  expiresAt: datetime("expires_at").nullable(),
+  startedAt: datetime("started_at"),  // Nullable sin .nullable()
+  expiresAt: datetime("expires_at")   // Nullable sin .nullable()
 });
 
 const db = drizzle(pool);
