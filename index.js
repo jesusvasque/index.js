@@ -73,7 +73,7 @@ class DatabaseStorage {
 
   async getActiveEntry() {
     const [entry] = await db.select().from(queueEntries)
-      .where(queueEntries.isActive.eq(true).and(queueEntries.isCompleted.eq(false)));
+      .where(queueEntries.isActive.equals(true).and(queueEntries.isCompleted.equals(false)));
     return entry || undefined;
   }
 
@@ -92,7 +92,7 @@ class DatabaseStorage {
     const expiresAt = new Date(now.getTime() + 20 * 60 * 1000);
     await db.update(queueEntries)
       .set({ isActive: true, startedAt: now, expiresAt })
-      .where(queueEntries.id.eq(id));
+      .where(queueEntries.id.equals(id));
   }
 
   async completeActiveEntry() {
@@ -101,15 +101,20 @@ class DatabaseStorage {
 
     await db.update(queueEntries)
       .set({ isActive: false, isCompleted: true })
-      .where(queueEntries.id.eq(activeEntry.id));
+      .where(queueEntries.id.equals(activeEntry.id));
 
-    // Activar siguiente en orden
-    const [nextEntry] = await db.select().from(queueEntries)
-      .where(queueEntries.isActive.equals(true).and(queueEntries.isCompleted.equals(false))
-);
+    const nextEntries = await db.select()
+      .from(queueEntries)
+      .where(
+        queueEntries.isCompleted.equals(false).and(
+          queueEntries.position.gt(activeEntry.position)
+        )
+      )
+      .orderBy(queueEntries.position, 'asc')
+      .limit(1)
+      .all();
 
-      .orderBy(queueEntries.position)
-      .limit(1);
+    const nextEntry = nextEntries[0];
 
     if (nextEntry) {
       await this.activateEntry(nextEntry.id);
@@ -148,7 +153,6 @@ app.get("/api/queue/status", async (req, res) => {
   }
 });
 
-// Endpoint para rotar turno
 app.post("/api/queue/rotate", async (req, res) => {
   try {
     const nextEntry = await storage.completeActiveEntry();
@@ -196,4 +200,3 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`Servidor corriendo en puerto ${PORT}`);
 });
-
