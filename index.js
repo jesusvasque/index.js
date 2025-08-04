@@ -105,7 +105,9 @@ class DatabaseStorage {
 
     // Activar siguiente en orden
     const [nextEntry] = await db.select().from(queueEntries)
-      .where(queueEntries.isCompleted.eq(false).and(queueEntries.position.gt(activeEntry.position)))
+      .where(queueEntries.isActive.equals(true).and(queueEntries.isCompleted.equals(false))
+);
+
       .orderBy(queueEntries.position)
       .limit(1);
 
@@ -194,3 +196,4 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`Servidor corriendo en puerto ${PORT}`);
 });
+
